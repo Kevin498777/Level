@@ -32,6 +32,28 @@ def generar_estadisticas():
         "tamano": 1  # Estático en 1 por ahora
     }
 
+
+# -----------------------------
+# PERSONAJE DE PRUEBAS (NOMBRE CLAVE)
+# -----------------------------
+NOMBRE_CLAVE_PRUEBAS = "shadow498"
+
+STATS_PRUEBAS = {
+    "velocidad": 99,
+    "fuerza": 999,      # Daño base = fuerza -> 999 (con Espada Ligera x2)
+    "energia": 999,
+    "vida": 999,
+    "defensa": 999
+}
+
+
+def aplicar_stats_pruebas(nombre, stats):
+    """Si el nombre es el nombre clave, sobrescribe las estadísticas con las de pruebas."""
+    if nombre.strip().lower() == NOMBRE_CLAVE_PRUEBAS:
+        stats = dict(stats)
+        stats.update(STATS_PRUEBAS)
+    return stats
+
 # -----------------------------
 # INTERFAZ PRINCIPAL DE CREACIÓN
 # -----------------------------
@@ -278,13 +300,16 @@ def iniciar_aplicacion():
         for widget in frame_stats.winfo_children():
             widget.destroy()
 
+        # Vista previa: si se escribe el nombre clave, mostrar las stats de pruebas
+        stats_vista = aplicar_stats_pruebas(nombre_var.get(), stats_actuales)
+
         filas = [
-            ("Vida (15 a 25):", stats_actuales["vida"], "#E06C75"),
-            ("Fuerza (1 a 5):", stats_actuales["fuerza"], "#D19A66"),
-            ("Velocidad (1 a 4):", stats_actuales["velocidad"], "#56B6C2"),
-            ("Energía (1 a 100):", stats_actuales["energia"], "#C678DD"),
-            ("Defensa (0 a 10):", stats_actuales["defensa"], "#98C379"),
-            ("Tamaño (Estático):", stats_actuales["tamano"], "#E5C07B")
+            ("Vida (15 a 25):", stats_vista["vida"], "#E06C75"),
+            ("Fuerza (1 a 5):", stats_vista["fuerza"], "#D19A66"),
+            ("Velocidad (1 a 4):", stats_vista["velocidad"], "#56B6C2"),
+            ("Energía (1 a 100):", stats_vista["energia"], "#C678DD"),
+            ("Defensa (0 a 10):", stats_vista["defensa"], "#98C379"),
+            ("Tamaño (Estático):", stats_vista["tamano"], "#E5C07B")
         ]
 
         for idx, (etiqueta, valor, color_destaque) in enumerate(filas):
@@ -358,16 +383,19 @@ def iniciar_aplicacion():
             tecla, tecla_str = slots_teclas[idx]
             hab.asignar_tecla(tecla, tecla_str)
 
+        # Personaje de pruebas: con el nombre clave se aplican stats especiales
+        stats_finales = aplicar_stats_pruebas(nombre, stats_actuales)
+
         # Configuración para iniciar el mundo
         config_mundo = {
             "nombre": nombre,
             "color": color_rgb,
-            "tamano": stats_actuales["tamano"],
-            "velocidad": stats_actuales["velocidad"],
-            "vida": stats_actuales["vida"],
-            "fuerza": stats_actuales["fuerza"],
-            "energia": stats_actuales["energia"],
-            "defensa": stats_actuales["defensa"],
+            "tamano": stats_finales["tamano"],
+            "velocidad": stats_finales["velocidad"],
+            "vida": stats_finales["vida"],
+            "fuerza": stats_finales["fuerza"],
+            "energia": stats_finales["energia"],
+            "defensa": stats_finales["defensa"],
             "habilidades": habilidades_seleccionadas,
             "herramienta": EspadaLigera()
         }
@@ -391,6 +419,9 @@ def iniciar_aplicacion():
         command=al_comenzar_mundo
     )
     btn_comenzar.pack(fill="x", padx=26, pady=(3, 10), ipady=5)
+
+    # Re-dibujar estadísticas al escribir el nombre (detecta el nombre clave de pruebas)
+    nombre_var.trace_add("write", lambda *args: renderizar_stats())
 
     # Inicializar vistas
     actualizar_vista_previa()

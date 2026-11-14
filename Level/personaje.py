@@ -19,6 +19,7 @@ class Personaje:
         self.velocidad_base = float(velocidad)     # Velocidad base fija (1 a 4)
         self.velocidad = float(velocidad)          # Velocidad actual (afectada por buffs/debuffs)
         self.vida = vida                           # Vida (15 a 25)
+        self.vida_max = vida                       # Tope de curación (orbes frutales)
         self.fuerza_base = float(fuerza)           # Fuerza base fija (1 a 5)
         self.fuerza = float(fuerza)                # Fuerza actual
         self.energia_max = energia                 # Energía máxima inicial (1 a 100)
@@ -37,6 +38,11 @@ class Personaje:
         # Terreno: True si el personaje está pisando un charco de agua (-50% vel)
         self.en_agua = False
         self.debuff_agua = 0.50
+
+        # Vegetación: arbusto en el que está metido (None si no está en ninguno)
+        self.arbusto_actual = None
+        self.oculto = False          # True = no puede ser visto desde afuera (pensado para futuros personajes)
+        self.tiempo_veneno = 0.0     # Acumulador del daño de hierba venenosa
 
         # Radio visual base escalado por el tamaño
         self.radio = int(20 * self.tamano)
@@ -102,12 +108,13 @@ class Personaje:
         # Velocidad final con umbral mínimo seguro
         self.velocidad = max(0.4, round(self.velocidad_base * (1.0 + modificador), 2))
 
-    def mover(self, limites_mundo, centro_mundo=None, radio_mundo=None, obstaculos=None):
+    def mover(self, limites_mundo, centro_mundo=None, radio_mundo=None, obstaculos=None, obstaculos_circulares=None):
         """
         Mueve al personaje hacia el destino, rota su orientación y actualiza su hitbox.
         - limites_mundo: rectángulo (min_x, min_y, max_x, max_y) de seguridad.
         - centro_mundo / radio_mundo: límite circular del mapa (opcional).
         - obstaculos: lista de rocas (pygame.Rect en .rect) que no se pueden atravesar.
+        - obstaculos_circulares: lista de (centro, radio) sólidos, ej. arbustos demasiado pequeños para entrar.
         """
         min_x, min_y, max_x, max_y = limites_mundo
         posicion_previa = self.posicion.copy()
@@ -115,30 +122,56 @@ class Personaje:
         direccion = self.destino - self.posicion
         distancia = direccion.length()
 
+        # Actualizar ángulo de rotación:
+        # 0° = Hacia arriba (0, -1), 180° = Hacia abajo (0, 1), 90° = Derecha (1, 0)
+        if distancia > 0.1:
+            self.angulo = math.degrees(math.atan2(direccion.x, -direccion.y)) % 360.0
+
         if distancia > self.velocidad:
             paso = direccion.normalize() * self.velocidad
-            self.posicion += paso
-
-            # Actualizar ángulo de rotación:
-            # 0° = Hacia arriba (0, -1), 180° = Hacia abajo (0, 1), 90° = Derecha (1, 0)
-            dx = direccion.x
-            dy = direccion.y
-            self.angulo = math.degrees(math.atan2(dx, -dy)) % 360.0
         else:
-            if distancia > 0.1:
-                dx = direccion.x
-                dy = direccion.y
-                self.angulo = math.degrees(math.atan2(dx, -dy)) % 360.0
-            self.posicion = self.destino.copy()
+            paso = direccion
+
+        # Rocas cercanas a la trayectoria de este frame (para no revisar todas)
+        cercanas = []
+        if obstaculos:
+            zona = pygame.Rect(0, 0, 0, 0)
+            zona.center = (round(self.posicion.x), round(self.posicion.y))
+            margen = round(paso.length() + self.radio * 2 + 2)
+            zona.inflate_ip(margen * 2, margen * 2)
+            cercanas = [obs.rect for obs in obstaculos if zona.colliderect(obs.rect)]
+
+        alcance = paso.length() + self.radio * 2 + 2
+        circulos_cercanos = [
+            (c, r) for c, r in (obstaculos_circulares or [])
+            if (c - self.posicion).length() <= alcance + r
+        ]
+
+        # Sub-pasos: a velocidades altas (ej. 99) el personaje avanza en tramos cortos
+        # para no "atravesar" rocas pequeñas de un solo salto
+        tramo_max = max(1.0, self.radio * 0.5)
+        sub_pasos = max(1, math.ceil(paso.length() / tramo_max))
+        sub_paso = paso / sub_pasos
+
+        for _ in range(sub_pasos):
+            self.posicion += sub_paso
+
+            # Colisión con rocas (círculo vs rectángulo): empujar al personaje fuera de la roca
+            for rect in cercanas:
+                self._resolver_colision_rect(rect)
+
+            # Colisión con obstáculos circulares (círculo vs círculo)
+            for centro, radio in circulos_cercanos:
+                separacion = self.posicion - centro
+                dist = separacion.length()
+                minimo = radio + self.radio
+                if dist < minimo:
+                    normal = separacion.normalize() if dist > 0.0001 else pygame.Vector2(1, 0)
+                    self.posicion = centro + normal * minimo
 
         # Restringir posición dentro del mundo jugable
         self.posicion.x = max(min_x + self.radio, min(self.posicion.x, max_x - self.radio))
         self.posicion.y = max(min_y + self.radio, min(self.posicion.y, max_y - self.radio))
-
-        # Colisión con rocas (círculo vs rectángulo): empujar al personaje fuera de la roca
-        if obstaculos:
-            for obs in obstaculos:
-                self._resolver_colision_rect(obs.rect)
 
         # Límite circular del mapa: no puede salir del círculo
         if centro_mundo is not None and radio_mundo is not None:
@@ -222,14 +255,21 @@ class Personaje:
         # Borde exterior blanco exacto (delimitador físico del radio / hitbox)
         pygame.draw.circle(pantalla, (255, 255, 255), (pos_x, pos_y), self.radio, 2)
 
-        # Indicador frontal sutil (visor que rota indicando hacia dónde mira el círculo)
+        # Ojos: dos puntos negros que siempre miran hacia donde se dirige el personaje
         rad = math.radians(self.angulo)
         frente_x = math.sin(rad)
         frente_y = -math.cos(rad)
+        derecha_x = math.cos(rad)
+        derecha_y = math.sin(rad)
 
-        indicador_x = pos_x + (frente_x * (self.radio - 5))
-        indicador_y = pos_y + (frente_y * (self.radio - 5))
-        pygame.draw.circle(pantalla, (255, 255, 255), (round(indicador_x), round(indicador_y)), 3)
+        adelante = self.radio * 0.45      # Qué tan adelantados están los ojos
+        separacion = self.radio * 0.32    # Distancia de cada ojo al eje central
+        radio_ojo = max(2, round(self.radio * 0.14))
+
+        for lado in (-1, 1):
+            ojo_x = pos_x + frente_x * adelante + derecha_x * separacion * lado
+            ojo_y = pos_y + frente_y * adelante + derecha_y * separacion * lado
+            pygame.draw.circle(pantalla, (10, 10, 14), (round(ojo_x), round(ojo_y)), radio_ojo)
 
         # Dibujar herramienta rotada sincronizada con el personaje
         if self.herramienta:
@@ -239,7 +279,9 @@ class Personaje:
         for p in self.proyectiles:
             p.dibujar(pantalla, desplazamiento)
 
-        # Etiqueta con el nombre flotando sobre el personaje
+        # Etiqueta con el nombre flotando sobre el personaje (oculta si está dentro de un arbusto)
+        if self.oculto:
+            return
         texto_nombre = fuente_nombre.render(self.nombre, True, (255, 255, 255))
         rect_texto = texto_nombre.get_rect(center=(pos_x, pos_y - self.radio - 14))
 

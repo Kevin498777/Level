@@ -4,6 +4,7 @@ import pygame
 from personaje import Personaje
 from habilidades import dibujar_panel_habilidades
 from herramientas import EspadaLigera
+from vegetacion import SistemaVegetacion, OSCURECIMIENTO
 
 # -----------------------------
 # CONFIGURACIÓN DEL MAPA
@@ -13,8 +14,8 @@ MARGEN_MUNDO = 150          # Espacio extra alrededor del círculo (zona oscura 
 TAMANO_MUNDO = (RADIO_MUNDO + MARGEN_MUNDO) * 2
 CENTRO_MUNDO = pygame.Vector2(RADIO_MUNDO + MARGEN_MUNDO, RADIO_MUNDO + MARGEN_MUNDO)
 
-MIN_ROCAS = 20
-MAX_ROCAS = 60
+MIN_ROCAS = 30
+MAX_ROCAS = 100
 CANTIDAD_CHARCOS = 3
 RADIO_CHARCO_MIN = 30
 RADIO_CHARCO_MAX = 200
@@ -122,8 +123,12 @@ class Roca:
         pygame.draw.rect(superficie, self.color_borde, rect, width=2, border_radius=radio_borde)
 
 
-def generar_rocas(charcos=()):
-    """Genera entre 20 y 60 rocas pequeñas y grandes dentro del círculo, sin solaparse ni caer en charcos."""
+def generar_rocas(zonas_ocupadas=()):
+    """
+    Genera entre 30 y 100 rocas pequeñas y grandes dentro del círculo, sin solaparse
+    ni caer sobre zonas ocupadas (charcos, arbustos: cualquier objeto con .rect).
+    """
+    charcos = zonas_ocupadas
     cantidad = random.randint(MIN_ROCAS, MAX_ROCAS)
     rocas = []
     intentos = 0
@@ -268,7 +273,7 @@ def dibujar_panel_estadisticas(pantalla, x, y, ancho, alto, jugador, fuentes, mo
 
     stats = [
         ("Tamaño (Nivel)", f"{jugador.tamano}", (200, 220, 255)),
-        ("Vida", f"{jugador.vida}", (255, 95, 95)),
+        ("Vida", f"{jugador.vida} / {jugador.vida_max}", (255, 95, 95)),
         ("Fuerza Base", f"{jugador.fuerza_base:.1f}", (200, 190, 180)),
         ("Fuerza Actual", f"{jugador.fuerza:.2f}", (255, 120, 60) if jugador.fuerza > jugador.fuerza_base else (220, 220, 220)),
         ("Velocidad Base", f"{jugador.velocidad_base:.1f}", (170, 190, 210)),
@@ -340,7 +345,13 @@ def iniciar_mundo(config):
     area_mundo_pantalla = pygame.Rect(mundo_x, mundo_y, mundo_w, mundo_h)
 
     charcos = generar_charcos()
-    rocas = generar_rocas(charcos)
+    vegetacion = SistemaVegetacion(CENTRO_MUNDO, RADIO_MUNDO, ZONA_SEGURA_SPAWN, charcos)
+    rocas = generar_rocas(list(charcos) + vegetacion.arbustos)
+    vegetacion.registrar_obstaculos(rocas)
+
+    # Capa oscura para simular la poca visibilidad dentro de un arbusto
+    capa_oscura = pygame.Surface((mundo_w, mundo_h), pygame.SRCALPHA)
+    capa_oscura.fill((0, 0, 0, OSCURECIMIENTO))
 
     # Instanciar personaje en el centro del mapa
     jugador = Personaje(
@@ -448,7 +459,10 @@ def iniciar_mundo(config):
         jugador.actualizar_velocidad()
 
         # Mover personaje respetando el círculo del mapa y las rocas
-        jugador.mover(limites_mundo, CENTRO_MUNDO, RADIO_MUNDO, rocas)
+        jugador.mover(limites_mundo, CENTRO_MUNDO, RADIO_MUNDO, rocas, vegetacion.obstaculos_para(jugador))
+
+        # Arbustos: ocultarse, veneno, orbes de curación y reaparición de frutales
+        vegetacion.actualizar(dt, jugador)
 
         # Cámara que sigue suavemente al personaje
         factor = min(1.0, SUAVIZADO_CAMARA * dt)
@@ -477,9 +491,19 @@ def iniciar_mundo(config):
         # Dibujar personaje, auras interiores, herramienta rotada y proyectiles
         jugador.dibujar(pantalla, fuentes["nombre"], desplazamiento)
 
+        # Arbustos por encima de los personajes (el que te oculta se ve semitransparente)
+        vegetacion.dibujar(pantalla, vista, desplazamiento, jugador)
+
+        # Dentro de un arbusto: el mapa se oscurece y solo tú ves los orbes de tu arbusto
+        if jugador.oculto:
+            pantalla.blit(capa_oscura, (mundo_x, mundo_y))
+            vegetacion.dibujar_interior(pantalla, desplazamiento, jugador)
+
         # Dibujar Hitboxes si está activada la visualización [H]
         if mostrar_hitboxes:
             ox, oy = desplazamiento
+            # Arbustos con su tipo revelado (solo en modo depuración)
+            vegetacion.dibujar_hitboxes(pantalla, vista, desplazamiento, fuentes["mini"])
 
             # Hitbox del personaje (rectángulo verde brillante y círculo exterior)
             pygame.draw.rect(pantalla, (0, 255, 120), jugador.hitbox.move(-ox, -oy), 1)
@@ -511,9 +535,16 @@ def iniciar_mundo(config):
         rel = jugador.posicion - CENTRO_MUNDO
         dist_centro = rel.length()
         txt_agua = "  |  EN AGUA: -50% Vel" if jugador.en_agua else ""
+        txt_oculto = "  |  OCULTO EN ARBUSTO" if jugador.oculto else ""
+        if jugador.oculto:
+            color_info = (140, 230, 140)
+        elif jugador.en_agua:
+            color_info = (120, 200, 255)
+        else:
+            color_info = (150, 160, 180)
         txt_coord = fuentes["mini"].render(
-            f"Posición: ({rel.x:.0f}, {rel.y:.0f})  |  Distancia al centro: {dist_centro:.0f} / {RADIO_MUNDO}  |  Rocas: {len(rocas)}  |  Charcos: {len(charcos)}{txt_agua}",
-            True, (120, 200, 255) if jugador.en_agua else (150, 160, 180)
+            f"Posición: ({rel.x:.0f}, {rel.y:.0f})  |  Distancia al centro: {dist_centro:.0f} / {RADIO_MUNDO}  |  Rocas: {len(rocas)}  |  Charcos: {len(charcos)}{txt_agua}{txt_oculto}",
+            True, color_info
         )
         pantalla.blit(txt_coord, (mundo_x + 12, mundo_h - 22))
 
